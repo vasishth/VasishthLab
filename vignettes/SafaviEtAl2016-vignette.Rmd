@@ -32,7 +32,9 @@ See published paper for full details: http://journal.frontiersin.org/article/10.
 # Load and Analyze Expt 1 data
 
 ```{r e1loaddata}
-load("../data/SafaviEtAl2016E1.Rda")
+data1<-read.table("../data/SafaviEtAl2016/Persiane1.txt",header=TRUE)
+## alternatively:
+#load("../data/SafaviEtAl2016E1.Rda")
 ```
 
 ```{r e1preprocess}
