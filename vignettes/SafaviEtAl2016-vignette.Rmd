@@ -182,3 +182,8 @@ e1crit<-subset(data1,roi="crit")
 ```
 
 
+```{r processRmd, echo=FALSE, eval=FALSE}
+## not run:
+rmarkdown::render('./SafaviEtAl2016-vignette.Rmd')
+```
+
