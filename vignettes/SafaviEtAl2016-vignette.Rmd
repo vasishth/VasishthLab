@@ -1,0 +1,182 @@
+---
+title: "Data analysis of Safavi et al 2016"
+author: "Shravan Vasishth"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Data analysis of Safavi et al 2016}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+# Preliminaries
+
+```{r loadlibraries, echo=FALSE, include=FALSE}
+library(VasishthLab)
+library(lme4)
+#library(RePsychLing)
+#library(car)
+#library(reshape)
+library(ggplot2)
+library(plyr)
+library(grid)
+library(lattice)
+library(xtable)
+library(rstanarm)
+library(purrr)
+library(tibble)
+```
+
+See published paper for full details: http://journal.frontiersin.org/article/10.3389/fpsyg.2016.00403/full.
+
+# Load and Analyze Expt 1 data
+
+```{r e1loaddata}
+load("../data/SafaviEtAl2016E1.Rda")
+```
+
+```{r e1preprocess}
+## Some preprocessing:
+data1$pos<-factor(data1$pos)
+data1$resp<-factor(data1$resp)
+data1$cond<-factor(data1$cond)
+
+#get question data (response accuracy)
+data1.q <- subset(data1, pos=="?")
+data1.q$resp<- as.numeric(as.character(data1.q$resp))
+## compute means:
+means_q<-round(100*with(data1.q,
+                       tapply(resp,cond,mean)),
+              digits=1)
+
+## contrast coding:
+## short -1, long 1
+data1.q$dist<-ifelse(data1.q$cond%in%c("a","c"),-1,1)
+## pred 1, unpred -1
+data1.q$pred<-ifelse(data1.q$cond%in%c("a","b"),1,-1)
+```
+
+## Question response accuracy analysis
+
+```{r e1questionresponse}
+m1glmer<-glmer(resp~dist*pred+(1|subj)+(1|item),family=binomial(),data1.q)
+```
+
+```{r printe1qresp, results='asis',echo=FALSE}
+print(xtable(summary(m1glmer)$coefficients),type="html")
+```
+
+Stan model:
+
+```{r e1stan}
+if(0){
+stanglmerm1<-stan_glmer(resp~dist*pred+(1+dist+pred|subj)+
+               (1+dist+pred|item),
+               family=binomial(),
+                     prior_intercept=student_t(df=2),
+                     prior=student_t(df=2),
+                  prior_covariance=decov(regularization=2),
+                  algorithm="sampling",
+                  adapt_delta=0.9999,
+                  chains=4,
+                  iter=2000,
+                  cores=4,
+                  data=data1.q)
+
+save(stanglmerm1,file="../data/stanglmerm1.Rda")
+}
+
+load("../data/SafaviEtAl2016/stanoutput/stanglmerm1.Rda")
+stanglmerm1_tab<-summary_stan_model(stanglmerm1,nfixefs=3)
+
+```
+
+```{r e1stanoutput, results='asis',echo=FALSE}
+print(xtable(stanglmerm1_tab),type="html")
+```
+
+## Reading time data analysis
+
+```{r e1readingtime}
+## Contrast coding
+## Reading times analysis:
+## short -1, long 1
+data1$dist<-ifelse(data1$cond%in%c("a","c"),-1,1)
+## pred 1, -1
+data1$pred<-ifelse(data1$cond%in%c("a","b"),1,-1)
+
+#nested
+data1$pred.dist <- ifelse(data1$cond=="a",-1,
+                          ifelse(data1$cond=="b",1,0))
+data1$nopred.dist <- ifelse(data1$cond=="c",-1,
+                         ifelse(data1$cond=="d",1,0))
+
+## 4 extreme data points removed: 0.02%
+
+m1<-lmer(log(rt)~dist*pred+(1+dist+dist:pred||subj)+
+           (1+pred||item),subset(data1,roi=="crit" & rt<3000))
+```
+
+```{r e1rtresults,results='asis',echo=FALSE}
+print(xtable(summary(m1)$coefficients),type="html")
+```
+
+Stan model:
+
+```{r e1rtstan}
+if(0){
+stanm1<-stan_lmer(log(rt)~dist*pred+(1+dist*pred|subj)+
+               (1+dist*pred|item),
+                  prior_intercept=normal(0,6),
+                  prior=normal(0,1),
+                  prior_covariance=decov(regularization=2),
+                  algorithm="sampling",
+                  adapt_delta=0.99,
+                  chains=4,
+                  iter=2000,
+                  cores=4,
+                  data=subset(data1,roi=="crit" & rt<3000))
+
+save(stanm1,file="stanm1.Rda")
+
+stanm1nested<-stan_lmer(log(rt)~pred+pred.dist+nopred.dist+(1+pred+pred.dist+nopred.dist|subj)+
+               (1+pred+pred.dist+nopred.dist|item),
+                  prior_intercept=normal(0,6),
+                  prior=normal(0,1),
+                  prior_covariance=decov(regularization=2),
+                  algorithm="sampling",
+                  adapt_delta=0.99,
+                  chains=4,
+                  iter=2000,
+                  cores=4,
+                  data=subset(data1,roi=="crit" & rt<3000))
+
+save(stanm1nested,file="stanm1nested.Rda")
+}
+```
+
+```{r e1rtanalysis}
+load("../data/SafaviEtAl2016/stanoutput/stanm1.Rda")
+load("../data/SafaviEtAl2016/stanoutput/stanm1nested.Rda")
+
+stanm1_tab<-summary_stan_model(stanm1,nfixefs=3)
+```
+
+```{r e1rtstanoutput, results='asis', echo=FALSE}
+print(xtable(stanm1_tab),type="html")
+```
+
+```{r e1rtstananalysisnested}
+stanm1nested_tab<-summary_stan_model(stanm1nested,nfixefs=3)
+```
+
+```{r e1rtstanoutputnested, results='asis', echo=FALSE}
+print(xtable(stanm1nested_tab),type="html")
+```
+
+```{r e1save}
+## create e1crit for comparison with exp2:
+e1crit<-subset(data1,roi="crit")
+```
+
+
