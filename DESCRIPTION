@@ -1,0 +1,22 @@
+Package: VasishthLab
+Title: Psycholinguistic Data and Example Analyses from Vasishth Lab (Potsdam)
+Version: 0.0.0.9000
+Authors@R: person("Shravan", "Vasishth", email = "vasishth.shravan@gmail.com", role = c("aut", "cre"))
+Description: Representative psycholinguistic data and code from Vasishth lab at
+    the University of Potsdam, Germany.
+Depends:
+    R (>= 3.3.0)
+Imports: rstanarm,
+    rjags,
+    ggplot2,
+    xtable,
+    dplyr,
+    tibble,
+    purrr
+License: CC0
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 5.0.1
+Suggests: knitr,
+    rmarkdown
+VignetteBuilder: knitr
