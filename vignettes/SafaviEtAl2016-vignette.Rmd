@@ -16,7 +16,7 @@ library(VasishthLab)
 library(lme4)
 #library(RePsychLing)
 #library(car)
-#library(reshape)
+library(reshape)
 library(ggplot2)
 library(plyr)
 library(grid)
@@ -25,6 +25,15 @@ library(xtable)
 library(rstanarm)
 library(purrr)
 library(tibble)
+library(tidyr)
+library(rstan)
+library(parallel)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+```{r, echo = FALSE}
+      knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```
 
 See published paper for full details: http://journal.frontiersin.org/article/10.3389/fpsyg.2016.00403/full.
@@ -33,6 +42,8 @@ See published paper for full details: http://journal.frontiersin.org/article/10.
 
 ```{r e1loaddata}
 data1<-read.table("../data/SafaviEtAl2016/Persiane1.txt",header=TRUE)
+head(data1)
+
 ## alternatively:
 #load("../data/SafaviEtAl2016E1.Rda")
 ```
@@ -127,7 +138,7 @@ Stan model:
 
 ```{r e1rtstan}
 if(0){
-stanm1<-stan_lmer(log(rt)~dist*pred+(1+dist*pred|subj)+
+system.time(stanm1<-stan_lmer(log(rt)~dist*pred+(1+dist*pred|subj)+
                (1+dist*pred|item),
                   prior_intercept=normal(0,6),
                   prior=normal(0,1),
@@ -138,7 +149,10 @@ stanm1<-stan_lmer(log(rt)~dist*pred+(1+dist*pred|subj)+
                   iter=2000,
                   cores=4,
                   data=subset(data1,roi=="crit" & rt<3000))
-
+)
+#    user   system  elapsed 
+#   3.899    2.734 1413.672 
+   
 save(stanm1,file="stanm1.Rda")
 
 stanm1nested<-stan_lmer(log(rt)~pred+pred.dist+nopred.dist+(1+pred+pred.dist+nopred.dist|subj)+
@@ -168,12 +182,277 @@ stanm1_tab<-summary_stan_model(stanm1,nfixefs=3)
 print(xtable(stanm1_tab),type="html")
 ```
 
+### Stan model by hand
+
+Here, we fit the same model as above but by writing Stan code.
+
+
+```{r modelmatrixe1}
+## subset critical data, rts below 3000 ms:
+data1crit <- subset(data1,roi=="crit" & rt<3000)
+data1crit$subj<-factor(data1crit$subj)
+data1crit$item<-factor(data1crit$item)
+
+X <- unname(model.matrix(~ 1+dist+pred, data1crit))
+attr(X,"assign") <- NULL
+str(X)
+```
+
+The data have to be specified as a list:
+
+```{r maxdat}
+maxdate1 <- 
+  within(list(), {
+    N <- nrow(X)
+    K <- J <- I <- ncol(X)
+    M <- length(levels(data1crit$subj))
+    L <- length(levels(data1crit$item))
+    X <- Zs <- Zi <- unname(X)
+    y <- data1crit$rt
+    subj <- as.integer(data1crit$subj)
+    item <- as.integer(data1crit$item)
+    }
+    )
+str(maxdate1)
+```
+
+
+```{r stanbyhand}
+standat <- '
+data {
+  int<lower=0>  N; // num observations
+  int<lower=1>  K; // length of fixed-effects vector
+  int<lower=0>  M; // num subjects
+  int<lower=1>  J; // length of subj vector-valued random effects
+  int<lower=0>  L; // num items
+  int<lower=1>  I; // length of item vector-values random effects
+  int<lower=1,upper=M> subj[N]; // subject indicator
+  int<lower=1,upper=L> item[N]; // item indicator
+  row_vector[K] X[N]; // model matrix for fixed-effects parameters
+  row_vector[J] Zs[N]; // generator model matrix for subj random effects
+  row_vector[I] Zi[N]; // generator model matrix for item random effects 
+  vector[N]     y; // response vector (reaction time)
+}
+'
+
+stanpars <- '
+parameters {
+  cholesky_factor_corr[J] Ls; // Cholesky factor of subj r.e. correlations
+  cholesky_factor_corr[I] Li; // Cholesky factor of item r.e. correlations
+  vector<lower=0>[J] taus; // standard deviations of unconditional subj r.e. dist
+  vector<lower=0>[I] taui; // standard deviations of unconditional item r.e. dist
+  vector[J] us[M];     // spherical subj random effects
+  vector[I] ui[L];     // spherical item random effects
+  vector[K] beta;      // fixed-effects
+  real<lower=0> sigma; // standard deviation of response given random effects
+}
+
+'
+
+stantrans <- '
+transformed parameters {
+  matrix[J,J] corrs;
+  matrix[I,I] corri;
+  corrs <- tcrossprod(Ls);  // for monitoring subj correlations
+  corri <- tcrossprod(Li);  // for monitoring item correlations
+}
+
+'
+
+stanmod <- '
+model {
+  matrix[J,J] Lambdas; 
+  vector[J] bs[M];
+  matrix[I,I] Lambdai; 
+  vector[I] bi[L];
+  taus ~ cauchy(0,2.5);
+  taui ~ cauchy(0,2.5);
+  Ls ~ lkj_corr_cholesky(2);
+  Li ~ lkj_corr_cholesky(2);
+  Lambdas <- diag_pre_multiply(taus,Ls);
+  Lambdai <- diag_pre_multiply(taui,Li);
+  for (m in 1:M) {
+    us[m] ~ normal(0,1);
+    bs[m] <- Lambdas * us[m];
+  }
+  for (l in 1:L) {
+    ui[l] ~ normal(0,1);
+    bi[l] <- Lambdai * ui[l];
+  }
+  for (n in 1:N)
+    y[n] ~ normal(X[n] * beta + Zs[n] * bs[subj[n]] + Zi[n] * bi[item[n]], sigma);
+}
+'
+
+## model specification:
+model <- paste(standat, stanpars, stantrans, stanmod)
+```
+
+
+Set up model (note that sampling will not be done yet):
+
+```{r maxmodele1}
+maxmodel <- stan(model_name="maxmodel", model_code=model, data=maxdate1, chains=0)
+```
+
+Sample from posterior:
+
+```{r e1stan,cache=TRUE}
+system.time(e1_stan <-
+  sflist2stanfit(
+    mclapply(1:4, mc.cores = 4,    # adjust number of cores to suit 
+      function(i) stan(fit = maxmodel, 
+                       data = maxdate1,
+                       iter=2000,
+                       chains = 1, 
+                       chain_id = i, 
+                       refresh = -1))
+    )
+  )
+#   user  system elapsed 
+#391.237   0.690 151.153 
+```
+
+Summarize results:
+
+```{r e1_results,cache=FALSE}
+e1_results<- summary(e1_stan,
+                       pars=c("beta", "sigma",
+                              "taus","taui",
+                              "corrs","corri"),
+                       probs = c(0.025,  0.975), 
+                     digits_summary = 3)
+rownames(e1_results$summary)
+```
+
+
+
 ```{r e1rtstananalysisnested}
 stanm1nested_tab<-summary_stan_model(stanm1nested,nfixefs=3)
 ```
 
 ```{r e1rtstanoutputnested, results='asis', echo=FALSE}
 print(xtable(stanm1nested_tab),type="html")
+```
+
+# Plot figure of region by region reading times
+
+## Data preparation for plotting
+
+```{r prepareforplote1}
+data1 <- subset(data1, pos!='?')
+region_names<-rep(c("predep","dep","precrit",
+                    "crit","postcrit","post"),4)
+region.id<-rep(1:6,4)
+cond.id<-rep(letters[1:4],each=6)
+
+region.df<-data.frame(cond=factor(cond.id),
+                      region.id=region.id,
+                      roi=factor(region_names))
+
+#merge multiple regions with same id
+data1.uniq.reg<-ddply(data1, 
+                     .(subj, item, cond, roi),
+                     summarize, 
+                     rt = sum(rt))
+#dim(data1.uniq.reg)
+
+data1.merged<-merge(data1.uniq.reg,region.df, 
+                   by.x=c("cond","roi"))
+#dim(data1.merged)
+
+data1.merged$cond<-droplevels(data1.merged$cond)
+
+## Names of factor levels:
+Expectation<-factor(ifelse(data1.merged$cond%in%c("a","b"),"strong-exp","weak-exp"),
+             levels=c("strong-exp","weak-exp"))
+dist<-factor(ifelse(data1.merged$cond%in%c("a","c"),"short","long"),
+                levels=c("short","long"))
+
+data1.merged$Expectation<-Expectation
+data1.merged$dist<-dist
+
+data.rs <- melt(data1.merged, 
+                id=c("Expectation","dist","cond","roi",
+                     "region.id","subj"), 
+                measure=c("rt"),
+                na.rm=TRUE)
+#dim(data.rs)
+
+#get mean rt and no. of data points for each region, for each subject/condition
+data.id  <- data.frame(cast(data.rs,subj+Expectation+dist+cond+roi+region.id ~ ., 
+                            function(x) c(rt=mean(x), N=length(x) ) ))
+#as_data_frame(data.id)
+#dim(data.id)
+#6*4*42
+#length(unique(data.id$subj))
+
+#mean of mean rt of each subject
+GM <- mean(tapply(data.id$rt, data.id$subj, mean))
+
+#deviation from the grandmean after considering intra-subject variability
+#removing between subject variance
+data.id <- ddply(data.id, .(subj), 
+                 transform, rt.w = rt - mean(rt) + GM)
+
+temp<-melt(data.id, id.var=c("subj","Expectation","dist","cond","roi","region.id"), 
+           measure.var="rt.w")
+
+M.id.w <- cast(temp, Expectation+dist+cond+roi+region.id  ~ ., 
+               function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) )
+M.id.w.pred <- cast(temp, Expectation+roi+region.id  ~ ., 
+                    function(x) c(M=mean(x), SE=sd(x)/sqrt(length(x)), N=length(x) ) )
+
+
+#head(M.id.w)
+M.id.w.orig<-M.id.w
+## make names consistent with paper:
+colnames(M.id.w)[1]<-"Predictability"
+M.id.w$Predictability<-factor(ifelse(M.id.w$Predictability=="strong-exp","strong","weak"))
+```
+
+```{r e1figurecrit}
+plot_critical<-function(data=M.id.w,
+                        roi="crit",
+                        factors=c("dist","Predictability"),
+                        k=1,
+                        xlab="Distance",
+                        ylab="reading time [RT in ms]",
+                        title="Critical region [Verb]"){
+  ggplot(subset(data,roi==roi),
+         aes(x=factors[1], y=M,group=factors[2])) + 
+         geom_point(shape=21,fill="white",size=k*3) +
+         geom_line(aes(linetype=factors[2]),size=k) +
+         geom_errorbar(aes(ymin=M-2*SE, ymax=M+2*SE),
+                       width=.1,size=k)+
+                       xlab(xlab)+
+                       ylab(ylab)+
+    labs(title=title) + theme_bw() + 
+    labs(legend.position=c(.87,.6))+
+    theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=14,face="bold"))+
+    theme(legend.text = element_text(colour="black", 
+                                     size = 16, face = "bold"))+
+  theme(legend.title = element_text(colour="black", size = 16, 
+                                    face = "bold"))
+}
+
+p1a<-ggplot(subset(M.id.w,roi=="crit"), 
+             aes(x=dist, y=M,group=Predictability)) + 
+               geom_point(shape=21,fill="white",size=k*3) +
+               geom_line(aes(linetype=Predictability),size=k) +
+               geom_errorbar(aes(ymin=M-2*SE, ymax=M+2*SE),
+                             width=.1,size=k)+
+                               xlab("Distance")+
+                               ylab("reading time [RT in ms]")+                                               labs(title="Critical region [Verb]") + theme_bw() + labs(legend.position=c(.87, .6))++theme(axis.text=element_text(size=14),
+        axis.title=element_text(size=14,face="bold"))+
+  theme(legend.text = element_text(colour="black", size = 16, face = "bold"))+
+  theme(legend.title = element_text(colour="black", size = 16, face = "bold"))
+```
+
+```{r plotfiguree1, fig.height=6,fig.width=6}
+
+p1a
 ```
 
 ```{r e1save}
